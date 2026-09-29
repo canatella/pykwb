@@ -63,8 +63,8 @@ message_id,message_type,key,name_de,name_en,type,signed,offset,length,bit,scale,
 16,sense,exhaust_gas_temp,T_Rauchgas,Exhaust Gas Temp,int,1,19,2,,0.1,C,,,measurement,temperature,2
 16,sense,,T_Control,,int,1,21,2,,0.1,C,,,measurement,temperature,2
 16,sense,ignition_tube_temp,T_Stokerkanal,,int,1,29,2,,0.1,C,,,measurement,temperature,2
-17,control,ash_can_ok,Aschebehaelter,Ash Can OK,bit,,3,,6,,,,,measurement,,2
-17,control,pellet_level_ok,Pellet_Vorrat,Pellet Level OK,bit,,4,,3,,,,,measurement,,2
+17,control,ash_container,Aschebehaelter,Ash Container,bit,,3,,6,,,,,measurement,,2
+17,control,pellet_supply,Pellet_Vorrat,Pellet Supply,bit,,4,,3,,,,,measurement,,2
 17,control,,Brandschutzklappe,,bit,,1,,1,,,,,measurement,,2
 17,control,cleaning_on,Reinigung,Cleaning On,bit,,2,,1,,,,,measurement,,2
 17,control,alarm_2,Alarm2,Alarm 2,bit,,1,,2,,,,,measurement,,2
