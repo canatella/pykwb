@@ -62,6 +62,10 @@ PROP_MODE_FILE = 2
 # session to establish, lose or reconnect, which makes this immune to the
 # stale-session lockups some serial servers hit when a TCP client restarts.
 PROP_MODE_UDP = 3
+# We listen and the serial server dials in. Its documented client-mode
+# recovery then applies: on losing us it retries, and after the configured
+# number of attempts reboots itself, so it comes back without being touched.
+PROP_MODE_TCP_SERVER = 4
 
 STATUS_WAITING = 0
 STATUS_PRE_1 = 1
@@ -263,6 +267,8 @@ class KWBEasyfire:
         self._udp_buffer = b""
         self._udp_offset = 0
         self._udp_source = None
+        self._tcp_peer = None
+        self._listener = None
         self._stop_event = threading.Event()
         self._retry_delay = self._config['connection']['retry_initial']
         self._last_valid_packet = time.monotonic()
@@ -341,16 +347,19 @@ class KWBEasyfire:
             self._connect_tcp()
         elif (self._mode == PROP_MODE_UDP):
             self._bind_udp()
+        elif (self._mode == PROP_MODE_TCP_SERVER):
+            self._listen_tcp()
         elif (self._mode == PROP_MODE_FILE):
             self._file = open(self._file_path, "r")
 
     def _close_connection(self):
         """Close resources, including after a failed constructor/connect."""
-        for name in ('_socket', '_serial', '_file'):
+        for name in ('_socket', '_listener', '_serial', '_file'):
             resource = getattr(self, name, None)
             if resource is not None:
                 resource.close()
         self._socket = None
+        self._listener = None
 
     def _reconnect_enabled(self):
         return self._mode == PROP_MODE_TCP and self._config['connection']['reconnect']
@@ -368,6 +377,38 @@ class KWBEasyfire:
         self._retry_delay = min(delay * 2, settings['retry_max'])
         self._debug(PROP_LOGLEVEL_INFO, "TCP reconnect in %g seconds" % delay)
         return delay
+
+    def _listen_tcp(self):
+        """Listen for the serial server to connect to us.
+
+        self._port is the LOCAL port to listen on. self._ip, when set, is the
+        only address a connection is accepted from. One peer at a time: the
+        backlog holds a reconnecting server until the stale session is gone.
+        """
+        self._tcp_peer = (
+            socket.gethostbyname(self._ip) if self._ip else None)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # Safe on a listening socket, and lets us rebind immediately
+            # after a restart instead of waiting out TIME_WAIT.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("", self._port))
+            listener.listen(1)
+        except BaseException:
+            listener.close()
+            raise
+        self._listener = listener
+        self._last_valid_packet = time.monotonic()
+
+    def _drop_peer(self):
+        """Forget the current peer so a fresh connection can be accepted."""
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+        # A half-received frame cannot be continued by a different session.
+        self._packet_parser = None
+        for sensor in self.get_sensors():
+            sensor.value = None
 
     def _bind_udp(self):
         """Bind the local port the serial server sends its datagrams to.
@@ -500,9 +541,9 @@ class KWBEasyfire:
 
     def _read_ord_byte(self):
         """Read a byte as number from the input."""
-        if self._mode == PROP_MODE_UDP:
+        if self._mode in (PROP_MODE_UDP, PROP_MODE_TCP_SERVER):
             raise ValueError(
-                "UDP input is only supported by the asyncio reader; "
+                "UDP and TCP server input are only supported by the asyncio reader; "
                 "use listen_forever()/listen_for() rather than run_thread()")
         return ord(self._read_byte())
 
@@ -700,6 +741,38 @@ class KWBEasyfire:
                 data = await asyncio.get_running_loop().sock_recv(self._socket, 1)
             if not data:
                 raise EOFError("Input connection closed")
+        elif self._mode == PROP_MODE_TCP_SERVER:
+            loop = asyncio.get_running_loop()
+            while True:
+                if self._socket is None:
+                    conn, peer = await loop.sock_accept(self._listener)
+                    if self._tcp_peer and peer[0] != self._tcp_peer:
+                        conn.close()
+                        await asyncio.sleep(0)
+                        continue
+                    conn.setblocking(False)
+                    self._socket = conn
+                    self._last_valid_packet = time.monotonic()
+                    self._debug(PROP_LOGLEVEL_INFO,
+                                "accepted connection from %s" % peer[0])
+                try:
+                    data = await asyncio.wait_for(
+                        loop.sock_recv(self._socket, 1), self._stale_remaining())
+                except (TimeoutError, asyncio.TimeoutError, OSError) as error:
+                    # A peer that connects and then says nothing is the
+                    # failure this mode exists to survive: drop it and wait
+                    # for the server to dial in again.
+                    self._debug(PROP_LOGLEVEL_WARN,
+                                "dropping silent or failed peer: %s" % error)
+                    self._drop_peer()
+                    await asyncio.sleep(0)
+                    continue
+                if not data:
+                    self._debug(PROP_LOGLEVEL_INFO, "peer disconnected")
+                    self._drop_peer()
+                    await asyncio.sleep(0)
+                    continue
+                break
         elif self._mode == PROP_MODE_UDP:
             loop = asyncio.get_running_loop()
             while self._udp_offset >= len(self._udp_buffer):
@@ -737,7 +810,11 @@ class KWBEasyfire:
         Partial packets survive cancellation. Connection construction remains
         synchronous; TCP/serial blocking settings are restored on exit.
         """
-        if self._mode in (PROP_MODE_TCP, PROP_MODE_UDP):
+        if self._mode == PROP_MODE_TCP_SERVER:
+            timeout = None
+            if self._listener is not None:
+                self._listener.setblocking(False)
+        elif self._mode in (PROP_MODE_TCP, PROP_MODE_UDP):
             timeout = self._socket.gettimeout() if self._socket is not None else None
             if self._socket is not None:
                 self._socket.setblocking(False)
@@ -766,7 +843,9 @@ class KWBEasyfire:
                 if packet is not None:
                     self._decode_packet(*packet)
         finally:
-            if self._mode in (PROP_MODE_TCP, PROP_MODE_UDP) and self._socket is not None:
+            if self._mode == PROP_MODE_TCP_SERVER:
+                pass
+            elif self._mode in (PROP_MODE_TCP, PROP_MODE_UDP) and self._socket is not None:
                 self._socket.settimeout(timeout)
             elif self._mode == PROP_MODE_SERIAL:
                 self._serial.timeout = timeout
@@ -840,6 +919,12 @@ def main():
     group_tcp.add_argument('--tcp', dest='mode', action='store_const', const=PROP_MODE_TCP, help="Set tcp mode")
     group_tcp.add_argument('--host', dest='hostname', help="Specify hostname", default='')
     group_tcp.add_argument('--port', dest='port', help="Specify port", default=23, type=int)
+    group_listen = parser.add_argument_group('TCP server')
+    group_listen.add_argument('--tcp-server', dest='mode', action='store_const',
+                              const=PROP_MODE_TCP_SERVER,
+                              help="Listen for the serial server to connect to us; "
+                                   "--port is the local port to listen on and --host, "
+                                   "if given, the only accepted peer")
     group_udp = parser.add_argument_group('UDP')
     group_udp.add_argument('--udp', dest='mode', action='store_const', const=PROP_MODE_UDP,
                            help="Set udp mode; --port is the local port to bind and "
@@ -876,8 +961,8 @@ def main():
     if any(message_id < 0 or message_id > 255 for message_id in args.decode):
         parser.error('--decode IDs must be between 0 and 255')
 
-    if args.mode == PROP_MODE_UDP and args.execution_mode != 'async':
-        parser.error('--udp requires --mode async')
+    if args.mode in (PROP_MODE_UDP, PROP_MODE_TCP_SERVER) and args.execution_mode != 'async':
+        parser.error('--udp and --tcp-server require --mode async')
 
     config = {'decode': args.decode}
     if args.source is not None:
