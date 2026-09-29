@@ -74,6 +74,24 @@ STATUS_PACKET_DONE = 255
 PROP_PACKET_SENSE = 32
 PROP_PACKET_CTRL = 33
 PROP_PACKET_SENSE_64 = 64
+# An Easyfire 1 driving a Comfort 3 controller reports these message IDs
+# instead of 32/33. messages.csv already defines them; they were simply never
+# wired up, so every frame such a boiler sends was parsed and then discarded.
+PROP_PACKET_SENSE_16 = 16
+PROP_PACKET_CTRL_17 = 17
+
+PROP_SENSE_MESSAGE_IDS = (PROP_PACKET_SENSE_16, PROP_PACKET_SENSE,
+                          PROP_PACKET_SENSE_64)
+PROP_CTRL_MESSAGE_IDS = (PROP_PACKET_CTRL_17, PROP_PACKET_CTRL)
+
+# messages.csv describes several mutually exclusive boiler generations, told
+# apart by its "source" column: 16/17 are documented by sources 2, 4 and 8,
+# 32/33/64 by source 10, 48/49 by source 6. Their field layouts conflict, so
+# only one generation may be loaded at a time. connection-independent config
+# key "source" selects it; source 2 is an Easyfire 1 with a Comfort 3.
+#
+# Leaving it unset keeps the historical behaviour of loading messages
+# 32/33/64 regardless of source, so existing callers are unaffected.
 
 PROP_SENSOR_TEMPERATURE = 0
 PROP_SENSOR_FLAG = 1
@@ -253,21 +271,41 @@ class KWBEasyfire:
         self._logdatalen = 1024
         self._logdata = []
 
-        self._sensors = {
-            PROP_PACKET_SENSE: [
-                KWBEasyfireSensor(PROP_PACKET_SENSE, 0, "RAW SENSE", PROP_SENSOR_RAW),
-            ],
-            PROP_PACKET_CTRL: [
-                KWBEasyfireSensor(PROP_PACKET_CTRL, 0, "RAW CTRL", PROP_SENSOR_RAW),
-            ],
-            PROP_PACKET_SENSE_64: [
-                KWBEasyfireSensor(PROP_PACKET_SENSE_64, 0, "RAW SENSE 64", PROP_SENSOR_RAW),
-            ],
+        # Only one boiler generation's definitions may be active at a time,
+        # since their field layouts conflict. Without an explicit source this
+        # loads messages 32/33/64 exactly as before.
+        source = self._config.get('source')
+        legacy_ids = (PROP_PACKET_SENSE, PROP_PACKET_CTRL, PROP_PACKET_SENSE_64)
+        known_ids = PROP_SENSE_MESSAGE_IDS + PROP_CTRL_MESSAGE_IDS
+        if source is None:
+            messages = [m for m in load_messages()
+                        if int(m['message_id']) in legacy_ids]
+            active_ids = list(legacy_ids)
+        else:
+            # A row may list several sources, comma separated, when the same
+            # definition applies to more than one document.
+            wanted = str(source)
+            messages = [m for m in load_messages()
+                        if wanted in [part.strip()
+                                      for part in m['source'].split(',')]
+                        and int(m['message_id']) in known_ids]
+            active_ids = sorted({int(m['message_id']) for m in messages})
+
+        raw_names = {
+            PROP_PACKET_SENSE_16: "RAW SENSE",
+            PROP_PACKET_CTRL_17: "RAW CTRL",
+            PROP_PACKET_SENSE: "RAW SENSE",
+            PROP_PACKET_CTRL: "RAW CTRL",
+            PROP_PACKET_SENSE_64: "RAW SENSE 64",
         }
-        for message in load_messages():
-            message_id = int(message['message_id'])
-            if message_id in self._sensors:
-                self._sensors[message_id].append(KWBEasyfireSensor.from_message(message))
+        self._sensors = {
+            message_id: [KWBEasyfireSensor(message_id, 0, raw_names[message_id],
+                                           PROP_SENSOR_RAW)]
+            for message_id in active_ids
+        }
+        for message in messages:
+            self._sensors[int(message['message_id'])].append(
+                KWBEasyfireSensor.from_message(message))
 
         self._thread = threading.Thread(target=self.run, daemon=True)
 
@@ -531,7 +569,7 @@ class KWBEasyfire:
 
     def _decode_sense_packet(self, version, packet):
         """Decode boiler temperatures using the message ID's payload layout."""
-        if version not in (PROP_PACKET_SENSE, PROP_PACKET_SENSE_64):
+        if version not in PROP_SENSE_MESSAGE_IDS or version not in self._sensors:
             return
         for sensor in self._sensors[version]:
             sensor.decode(packet)
@@ -543,19 +581,19 @@ class KWBEasyfire:
 
     def _decode_ctrl_packet(self, version, packet):
         """Decode a control packet into the list of sensors."""
-        if version != PROP_PACKET_CTRL:
+        if version not in PROP_CTRL_MESSAGE_IDS or version not in self._sensors:
             return
 
         for i in range(min(5, len(packet))):
             input_bit = packet[i]
             self._debug(PROP_LOGLEVEL_DEBUG, "Byte " + str(i) + ": " + str((input_bit >> 7) & 1) + str((input_bit >> 6) & 1) + str((input_bit >> 5) & 1) + str((input_bit >> 4) & 1) + str((input_bit >> 3) & 1) + str((input_bit >> 2) & 1) + str((input_bit >> 1) & 1) + str(input_bit & 1))
 
-        for sensor in self._sensors[PROP_PACKET_CTRL]:
+        for sensor in self._sensors[version]:
             sensor.decode(packet)
 
         if version == 33:
             self._debug(PROP_LOGLEVEL_INFO, "ID 33 control values:\n" +
-                        "\n".join(str(sensor) for sensor in self._sensors[PROP_PACKET_CTRL]))
+                        "\n".join(str(sensor) for sensor in self._sensors[version]))
 
     def get_sensors(self):
         """Return the list of sensors."""
@@ -572,9 +610,11 @@ class KWBEasyfire:
 
     def _decode_packet(self, mode, version, packet):
         """Decode only configured message IDs with matching frame types."""
-        if mode == PROP_PACKET_SENSE and version in (PROP_PACKET_SENSE, PROP_PACKET_SENSE_64):
+        if (mode == PROP_PACKET_SENSE and version in PROP_SENSE_MESSAGE_IDS
+                and version in self._sensors):
             self._decode_sense_packet(version, packet)
-        elif mode == PROP_PACKET_CTRL and version == PROP_PACKET_CTRL:
+        elif (mode == PROP_PACKET_CTRL and version in PROP_CTRL_MESSAGE_IDS
+                and version in self._sensors):
             self._decode_ctrl_packet(version, packet)
         if version in self._config.get('decode', []):
             for line in decode_pairs(version, packet):
