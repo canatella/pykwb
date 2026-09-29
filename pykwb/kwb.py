@@ -262,6 +262,7 @@ class KWBEasyfire:
         self._socket = None
         self._udp_buffer = b""
         self._udp_offset = 0
+        self._udp_source = None
         self._stop_event = threading.Event()
         self._retry_delay = self._config['connection']['retry_initial']
         self._last_valid_packet = time.monotonic()
@@ -375,9 +376,12 @@ class KWBEasyfire:
         when set, is the address datagrams must come from; anything else is
         dropped. Leave it empty to accept from any source.
         """
+        # Datagrams report a numeric source address, so a configured hostname
+        # has to be resolved here or the comparison would reject everything.
+        self._udp_source = (
+            socket.gethostbyname(self._ip) if self._ip else None)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(("", self._port))
         except BaseException:
             sock.close()
@@ -678,6 +682,10 @@ class KWBEasyfire:
 
     def run_thread(self):
         """Start the background listener."""
+        if self._mode == PROP_MODE_UDP:
+            raise ValueError(
+                "UDP input is only supported by the asyncio reader; "
+                "use listen_forever()/listen_for() rather than run_thread()")
         self._run_thread = True
         self._stop_event.clear()
         self._thread.start()
@@ -697,8 +705,12 @@ class KWBEasyfire:
             while self._udp_offset >= len(self._udp_buffer):
                 datagram, source = await loop.sock_recvfrom(self._socket, 65535)
                 # UDP has no EOF: an empty datagram is legal and just means
-                # "nothing here", so keep waiting rather than raising.
-                if self._ip and source[0] != self._ip:
+                # "nothing here", so keep waiting rather than raising. Both
+                # discard paths yield, or a flood of empty or wrong-source
+                # datagrams could starve cancellation and listen_for deadlines.
+                if not datagram or (self._udp_source
+                                    and source[0] != self._udp_source):
+                    await asyncio.sleep(0)
                     continue
                 self._udp_buffer = datagram
                 self._udp_offset = 0
@@ -820,10 +832,18 @@ def main():
                                  help="Listen continuously, printing summaries every --wait seconds")
     group_execution.add_argument('--decode', nargs='*', type=int, default=[], metavar='ID',
                                  help="Also decode two-byte values from offsets 3 and 4 for these message IDs (0-255)")
+    group_execution.add_argument('--source', dest='source', default=None,
+                                 help="messages.csv signal-map source to load "
+                                      "(e.g. 2 for an Easyfire 1 / Comfort 3). "
+                                      "Omit to load messages 32/33/64 as before")
     group_tcp = parser.add_argument_group('TCP')
     group_tcp.add_argument('--tcp', dest='mode', action='store_const', const=PROP_MODE_TCP, help="Set tcp mode")
     group_tcp.add_argument('--host', dest='hostname', help="Specify hostname", default='')
     group_tcp.add_argument('--port', dest='port', help="Specify port", default=23, type=int)
+    group_udp = parser.add_argument_group('UDP')
+    group_udp.add_argument('--udp', dest='mode', action='store_const', const=PROP_MODE_UDP,
+                           help="Set udp mode; --port is the local port to bind and "
+                                "--host, if given, is the only accepted sender")
     group_serial = parser.add_argument_group('Serial')
     group_serial.add_argument('--serial', dest='mode', action='store_const', const=PROP_MODE_SERIAL, help="Set serial mode")
     group_serial.add_argument('--interface', dest='interface', help="Specify interface", default='')
@@ -856,8 +876,14 @@ def main():
     if any(message_id < 0 or message_id > 255 for message_id in args.decode):
         parser.error('--decode IDs must be between 0 and 255')
 
+    if args.mode == PROP_MODE_UDP and args.execution_mode != 'async':
+        parser.error('--udp requires --mode async')
+
+    config = {'decode': args.decode}
+    if args.source is not None:
+        config['source'] = args.source
     kwb = KWBEasyfire(args.mode, args.hostname, args.port, args.interface, 0, args.file,
-                     _config={'decode': args.decode})
+                     _config=config)
     kwb._debug_level = (PROP_LOGLEVEL_NONE if args.log == 'false'
                         else log_levels[args.log_level])
     # Run in either async loop or thread
