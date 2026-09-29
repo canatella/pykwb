@@ -72,10 +72,8 @@ message_id,message_type,key,name_de,name_en,type,signed,offset,length,bit,scale,
 17,control,tank_pump_on,Boiler_Pumpe,Tank Pump On,bit,,1,,5,,,,,measurement,,2
 17,control,loop_1_pump_on,HK1_Pumpe,Loop 1 Pump On,bit,,1,,7,,,,,measurement,,2
 17,control,ash_clearing_on,Ascheaustragung,Ash Clearing On,bit,,2,,0,,,,,measurement,,2
-17,control,cleaning_on,,Cleaning On,bit,,2,,1,,,,,measurement,,2
 17,control,loop_1_mixer_on,HK1_Mischer,Loop 1 Mixer,bit,,2,,6,,,,,measurement,,2
 17,control,,Hauptrelais,,bit,,3,,4,,,,,measurement,,2
-17,control,,Raumaustragung,Ash Clearing On,bit,,3,,6,,,,,measurement,,2
 17,control,,Kessel_AN,Boiler On,bit,,15,,0,,,,,measurement,,2
 17,control,,Zündung,Ignition On,bit,,6,,0,,,,,measurement,,4
 17,control,,Brandschutzklappe,,bit,,6,,1,,,,,measurement,,4
