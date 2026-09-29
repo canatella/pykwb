@@ -57,6 +57,11 @@ PROP_LOGLEVEL_NONE = 0
 PROP_MODE_SERIAL = 0
 PROP_MODE_TCP = 1
 PROP_MODE_FILE = 2
+# Connectionless input. The serial server is configured as a UDP client and
+# pushes datagrams at us unprompted; we only bind and read. There is no
+# session to establish, lose or reconnect, which makes this immune to the
+# stale-session lockups some serial servers hit when a TCP client restarts.
+PROP_MODE_UDP = 3
 
 STATUS_WAITING = 0
 STATUS_PRE_1 = 1
@@ -255,6 +260,8 @@ class KWBEasyfire:
         self._run_thread = True
         self._packet_parser = None
         self._socket = None
+        self._udp_buffer = b""
+        self._udp_offset = 0
         self._stop_event = threading.Event()
         self._retry_delay = self._config['connection']['retry_initial']
         self._last_valid_packet = time.monotonic()
@@ -331,6 +338,8 @@ class KWBEasyfire:
             self._serial = serial.Serial(self._serial_device, self._serial_speed)
         elif (self._mode == PROP_MODE_TCP):
             self._connect_tcp()
+        elif (self._mode == PROP_MODE_UDP):
+            self._bind_udp()
         elif (self._mode == PROP_MODE_FILE):
             self._file = open(self._file_path, "r")
 
@@ -358,6 +367,25 @@ class KWBEasyfire:
         self._retry_delay = min(delay * 2, settings['retry_max'])
         self._debug(PROP_LOGLEVEL_INFO, "TCP reconnect in %g seconds" % delay)
         return delay
+
+    def _bind_udp(self):
+        """Bind the local port the serial server sends its datagrams to.
+
+        self._port is the LOCAL port to listen on, not a remote one. self._ip,
+        when set, is the address datagrams must come from; anything else is
+        dropped. Leave it empty to accept from any source.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", self._port))
+        except BaseException:
+            sock.close()
+            raise
+        self._socket = sock
+        self._udp_buffer = b""
+        self._udp_offset = 0
+        self._last_valid_packet = time.monotonic()
 
     def _connect_tcp(self):
         """Connect with a deadline and interruptible readiness waits."""
@@ -468,6 +496,10 @@ class KWBEasyfire:
 
     def _read_ord_byte(self):
         """Read a byte as number from the input."""
+        if self._mode == PROP_MODE_UDP:
+            raise ValueError(
+                "UDP input is only supported by the asyncio reader; "
+                "use listen_forever()/listen_for() rather than run_thread()")
         return ord(self._read_byte())
 
     @staticmethod
@@ -660,6 +692,18 @@ class KWBEasyfire:
                 data = await asyncio.get_running_loop().sock_recv(self._socket, 1)
             if not data:
                 raise EOFError("Input connection closed")
+        elif self._mode == PROP_MODE_UDP:
+            loop = asyncio.get_running_loop()
+            while self._udp_offset >= len(self._udp_buffer):
+                datagram, source = await loop.sock_recvfrom(self._socket, 65535)
+                # UDP has no EOF: an empty datagram is legal and just means
+                # "nothing here", so keep waiting rather than raising.
+                if self._ip and source[0] != self._ip:
+                    continue
+                self._udp_buffer = datagram
+                self._udp_offset = 0
+            data = self._udp_buffer[self._udp_offset:self._udp_offset + 1]
+            self._udp_offset += 1
         elif self._mode == PROP_MODE_SERIAL:
             # timeout=0 makes serial reads nonblocking on all platforms.
             while True:
@@ -681,7 +725,7 @@ class KWBEasyfire:
         Partial packets survive cancellation. Connection construction remains
         synchronous; TCP/serial blocking settings are restored on exit.
         """
-        if self._mode == PROP_MODE_TCP:
+        if self._mode in (PROP_MODE_TCP, PROP_MODE_UDP):
             timeout = self._socket.gettimeout() if self._socket is not None else None
             if self._socket is not None:
                 self._socket.setblocking(False)
@@ -710,7 +754,7 @@ class KWBEasyfire:
                 if packet is not None:
                     self._decode_packet(*packet)
         finally:
-            if self._mode == PROP_MODE_TCP and self._socket is not None:
+            if self._mode in (PROP_MODE_TCP, PROP_MODE_UDP) and self._socket is not None:
                 self._socket.settimeout(timeout)
             elif self._mode == PROP_MODE_SERIAL:
                 self._serial.timeout = timeout
