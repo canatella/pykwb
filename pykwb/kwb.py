@@ -32,6 +32,7 @@ import logging
 import socket
 import select
 import errno
+import sys
 import time
 import threading
 import argparse
@@ -117,6 +118,13 @@ SERIAL_INTERFACE = "/dev/ttyUSB0"
 SERIAL_SPEED = 19200
 
 _LOGGER = logging.getLogger(__name__)
+_LOGGING_LEVELS = {
+    PROP_LOGLEVEL_TRACE: logging.DEBUG,
+    PROP_LOGLEVEL_DEBUG: logging.DEBUG,
+    PROP_LOGLEVEL_INFO: logging.INFO,
+    PROP_LOGLEVEL_WARN: logging.WARNING,
+    PROP_LOGLEVEL_ERROR: logging.ERROR,
+}
 
 
 class _ListenerStopped(Exception):
@@ -331,9 +339,9 @@ class KWBEasyfire:
             self._connection_lost(error)
 
     def _debug(self, level, text):
-        """Output a debug log text."""
+        """Log text through the module logger so the host application can filter it."""
         if (level <= self._debug_level):
-            print(text)
+            _LOGGER.log(_LOGGING_LEVELS[level], text)
 
     def __del__(self):
         """Destruct the object."""
@@ -971,6 +979,7 @@ def main():
                      _config=config)
     kwb._debug_level = (PROP_LOGLEVEL_NONE if args.log == 'false'
                         else log_levels[args.log_level])
+    logging.basicConfig(level=logging.DEBUG, format="%(message)s", stream=sys.stdout)
     # Run in either async loop or thread
     try:
         if args.execution_mode == 'async':

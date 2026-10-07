@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name = 'pykwb',
-    version = '0.0.23',
+    version = '0.0.24',
     packages = ['pykwb'],
     package_data = {'pykwb': ['messages.csv']},
     install_requires = ['pyserial>=3.0.1'],

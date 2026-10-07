@@ -1,7 +1,5 @@
 """Regression coverage for boiler temperature layouts and wire framing."""
 import unittest
-from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -223,14 +221,13 @@ class TemperatureTests(unittest.TestCase):
             except StopIteration:
                 raise EOFError from None
 
-        output = StringIO()
-        with redirect_stdout(output), \
+        with self.assertLogs('pykwb', 'DEBUG') as logs, \
                 patch.object(reader, '_read_ord_byte', side_effect=read_byte), \
                 patch.object(reader, '_decode_sense_packet') as sense, \
                 patch.object(reader, '_decode_ctrl_packet') as ctrl:
             reader.run()
         self.assertEqual(
-            [line for line in output.getvalue().splitlines() if line],
+            [line for r in logs.records for line in r.getMessage().splitlines() if line],
             ['Packet ID 87 CTRL counter=1 length=24',
              'Packet ID 48 SENSE counter=1 length=34',
              'Packet ID 32 SENSE counter=1 length=32',

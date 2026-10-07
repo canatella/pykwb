@@ -8,15 +8,18 @@ from pykwb.kwb import KWBEasyfire, PROP_PACKET_CTRL, main
 from pykwb.decode import decode_pairs
 
 
+def logged_lines(logs):
+    return '\n'.join(r.getMessage() for r in logs.records).splitlines()
+
+
 class PairDecodeTests(unittest.TestCase):
     def test_both_alignments_and_trailing_byte(self):
         reader = KWBEasyfire(-1, _config={'decode': [87]})
         payload = bytes.fromhex('00 00 00 02 5f ff c9 05 14')
         before = [s.value for s in reader.get_sensors()]
-        output = StringIO()
-        with redirect_stdout(output):
+        with self.assertLogs('pykwb', 'DEBUG') as logs:
             reader._decode_packet(PROP_PACKET_CTRL, 87, payload)
-        self.assertEqual(output.getvalue().splitlines(), [
+        self.assertEqual(logged_lines(logs), [
             'ID 87 two-byte decode from offset 3:',
             '  Offset 3: raw=607 temperature=60.7 mbar=0.607 rpm=364.2 ms=6070',
             '  Offset 5: raw=-55 temperature=-5.5 mbar=65.481 rpm=39288.6 ms=654810',
