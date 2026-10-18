@@ -1,4 +1,5 @@
 """Regression coverage for boiler temperature layouts and wire framing."""
+import logging
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
@@ -226,12 +227,17 @@ class TemperatureTests(unittest.TestCase):
                 patch.object(reader, '_decode_sense_packet') as sense, \
                 patch.object(reader, '_decode_ctrl_packet') as ctrl:
             reader.run()
+        info = [r for r in logs.records if r.levelno >= logging.INFO]
         self.assertEqual(
-            [line for r in logs.records for line in r.getMessage().splitlines() if line],
+            [line for r in info for line in r.getMessage().splitlines() if line],
             ['Packet ID 87 CTRL counter=1 length=24',
              'Packet ID 48 SENSE counter=1 length=34',
              'Packet ID 32 SENSE counter=1 length=32',
              'Packet ID 33 CTRL counter=1 length=24'])
+        payloads = [r.getMessage() for r in logs.records
+                    if r.levelno == logging.DEBUG]
+        self.assertEqual(len(payloads), 4)
+        self.assertEqual(payloads[2], 'Packet 32 SENSE payload=' + bytes(32).hex(' '))
         sense.assert_called_once_with(32, bytes(32))
         ctrl.assert_called_once_with(33, bytes(24))
 
