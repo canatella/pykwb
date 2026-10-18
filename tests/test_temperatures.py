@@ -77,6 +77,23 @@ class TemperatureTests(unittest.TestCase):
                                          [v is not None for v in expected])
                 self.assertEqual(counts, {sense_id: count, sense_id + 1: count})
 
+    def test_easyfire_1_room_unit_temperature_and_mode(self):
+        # Captured 2026-10-18 from an Easyfire 1 / Comfort 3 (source 2) with
+        # the room unit's dial centred and its switch on off, then night.
+        off = bytes.fromhex(
+            '80 58 6d ab 05 01 16 01 3d 02 46 02 7b 05 14 05 14 00 64 02 58 01 a5 00 cf'
+            ' 01 f4 05 14 01 35 05 14 05 14 05 14 05 14 01 f4 01 00 00 00 2b 19 00 00'
+            ' 00 00 00 00 00 00 00')
+        night = off[:24] + b'\xca' + off[25:41] + b'\x02' + off[42:]
+        reader = KWBEasyfire(-1, _config={'source': 2})
+        reader._debug_level = 0
+        by_key = {s.key: s for s in reader._sensors[16] if s.key}
+        for payload, temp, mode in ((off, 20.7, 1), (night, 20.2, 2)):
+            with self.subTest(mode=mode):
+                reader._decode_sense_packet(16, payload)
+                self.assertEqual(by_key['room_temp'].value, temp)
+                self.assertEqual(by_key['room_unit_mode'].value, mode)
+
     def test_truncated_payload_recovers_at_next_header(self):
         for sense in (False, True):
             with self.subTest(sense=sense):
