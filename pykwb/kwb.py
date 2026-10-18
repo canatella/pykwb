@@ -650,6 +650,11 @@ class KWBEasyfire:
             if self._debug_level >= PROP_LOGLEVEL_DEBUG:
                 summary += " payload=" + packet.hex(" ")
             self._debug(PROP_LOGLEVEL_INFO, summary)
+            # Hosts such as Home Assistant never raise _debug_level; let
+            # their logger configuration expose every payload for decoding.
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug("Packet %d %s payload=%s", version, packet_type,
+                              packet.hex(" "))
             return (mode, version, packet)
 
     def _decode_sense_packet(self, version, packet):
