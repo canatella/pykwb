@@ -63,6 +63,9 @@ message_id,message_type,key,name_de,name_en,type,signed,offset,length,bit,scale,
 16,sense,exhaust_gas_temp,T_Rauchgas,Exhaust Gas Temp,int,1,19,2,,0.1,C,,,measurement,temperature,2
 16,sense,,T_Control,,int,1,21,2,,0.1,C,,,measurement,temperature,2
 16,sense,ignition_tube_temp,T_Stokerkanal,,int,1,29,2,,0.1,C,,,measurement,temperature,2
+16,sense,,Unbekannt_23,Unknown 23,int,1,23,2,,0.1,C,,,measurement,temperature,2
+16,sense,,Unbekannt_25,Unknown 25,int,1,25,2,,0.1,C,,,measurement,temperature,2
+16,sense,,Unbekannt_39,Unknown 39,int,1,39,2,,0.1,C,,,measurement,temperature,2
 17,control,ash_container,Aschebehaelter,Ash Container,bit,,3,,6,,,,,measurement,,2
 17,control,pellet_supply,Pellet_Vorrat,Pellet Supply,bit,,4,,3,,,,,measurement,,2
 17,control,,Brandschutzklappe,,bit,,1,,1,,,,,measurement,,2
